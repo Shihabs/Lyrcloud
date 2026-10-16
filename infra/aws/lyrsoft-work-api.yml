@@ -291,13 +291,42 @@ Resources:
       IntegrationUri: !GetAtt WorkFunction.Arn
       PayloadFormatVersion: '2.0'
 
-  # One authorized catch-all route; the Lambda does the routing. CORS preflights are answered
-  # by API Gateway from CorsConfiguration before routing.
-  ProxyRoute:
+  # One authorized route per method; the Lambda does the routing. Deliberately not `ANY`:
+  # an ANY route also matches the browser's unauthenticated CORS preflight (OPTIONS) and
+  # rejects it with 401. With no OPTIONS route, API Gateway answers preflights itself from
+  # CorsConfiguration.
+  GetProxyRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref HttpApi
-      RouteKey: 'ANY /{proxy+}'
+      RouteKey: 'GET /{proxy+}'
+      Target: !Sub 'integrations/${LambdaIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  PostProxyRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'POST /{proxy+}'
+      Target: !Sub 'integrations/${LambdaIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  PatchProxyRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'PATCH /{proxy+}'
+      Target: !Sub 'integrations/${LambdaIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  DeleteProxyRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'DELETE /{proxy+}'
       Target: !Sub 'integrations/${LambdaIntegration}'
       AuthorizationType: JWT
       AuthorizerId: !Ref JwtAuthorizer
