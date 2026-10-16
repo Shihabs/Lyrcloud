@@ -68,11 +68,13 @@ export function isLoggedIn() {
   return Boolean(getTokens());
 }
 
-// Redirects the browser to Cognito's Hosted UI. No `identity_provider` param
-// is passed deliberately, so Hosted UI shows both the Google and GitHub
-// buttons and lets the user choose.
-// `returnTo` must be a same-site path; /callback.html sends the user there after sign-in.
-export async function redirectToLogin(returnTo = '/dash/') {
+// Redirects the browser to Cognito. Passing `provider` ('google' or 'github')
+// skips the Hosted UI chooser page and goes straight to that provider; without
+// it, Hosted UI shows both. `returnTo` must be a same-site path; /callback.html
+// sends the user there after sign-in.
+const IDENTITY_PROVIDERS = { google: 'GoogleOIDC', github: 'GitHubBridge' };
+
+export async function redirectToLogin(returnTo = '/dash/', provider) {
   sessionStorage.setItem(RETURN_KEY, returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/dash/');
   const verifier = randomString(32);
   const challenge = base64url(await sha256(verifier));
@@ -85,6 +87,7 @@ export async function redirectToLogin(returnTo = '/dash/') {
   url.searchParams.set('scope', 'openid email profile');
   url.searchParams.set('code_challenge', challenge);
   url.searchParams.set('code_challenge_method', 'S256');
+  if (IDENTITY_PROVIDERS[provider]) url.searchParams.set('identity_provider', IDENTITY_PROVIDERS[provider]);
   location.href = url.toString();
 }
 

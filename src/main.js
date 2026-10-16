@@ -1,4 +1,4 @@
-import { isLoggedIn, logout, redirectToLogin } from './auth.js';
+import { isLoggedIn, logout } from './auth.js';
 import { getSession } from './session.js';
 
 const menuButton = document.querySelector('.menu-button');
@@ -33,9 +33,4 @@ if (loginLink && isLoggedIn()) {
   logoutButton.addEventListener('click', logout);
   pill.append(dashboard, logoutButton);
   loginLink.replaceWith(pill);
-} else {
-  loginLink?.addEventListener('click', (event) => {
-    event.preventDefault();
-    redirectToLogin('/dash/');
-  });
 }

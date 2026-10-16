@@ -8,6 +8,6 @@ if (isLoggedIn()) location.replace(destination);
 for (const button of document.querySelectorAll('[data-login]')) {
   button.addEventListener('click', () => {
     button.disabled = true;
-    redirectToLogin(destination);
+    redirectToLogin(destination, button.dataset.login);
   });
 }

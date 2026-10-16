@@ -1219,6 +1219,7 @@ code.inline {
 .auth-page {
   display: grid;
   place-items: center;
+  align-content: center;
   gap: 28px;
   min-height: 100vh;
   padding: 40px 16px;
@@ -1242,6 +1243,41 @@ code.inline {
   border: 1px dashed var(--warn-line);
   border-radius: 12px;
   color: var(--warn-ink);
+}
+
+.provider-buttons {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.form-card .provider-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--surface-input);
+  font-size: 0.98rem;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.form-card .provider-button:hover {
+  border-color: var(--brand);
+  background: var(--hover);
+}
+
+.form-card .provider-button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.provider-button svg {
+  width: 20px;
+  height: 20px;
 }
 
 .auth-switch {
