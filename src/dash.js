@@ -253,8 +253,11 @@ function bindCharts() {
 
 const icons = {
   home: '⌂', sites: '◎', workers: '{}', settings: '⚙', overview: '▤', analytics: '📈',
-  dns: '☍', ssl: '🔒', security: '🛡', caching: '⚡', add: '+',
+  dns: '☍', ssl: '🔒', security: '🛡', caching: '⚡', add: '+', users: '👥',
 };
+
+const ROLE_LABELS = { superadmin: 'Super admin', admin: 'Admin', user: 'User' };
+const isStaff = (role) => role === 'admin' || role === 'superadmin';
 
 function sidebar(route) {
   const accountLinks = [
@@ -263,6 +266,7 @@ function sidebar(route) {
     ['#/workers', 'Edge Functions', icons.workers, route.view.startsWith('worker')],
     ['#/settings', 'Account settings', icons.settings, route.view === 'settings'],
   ];
+  if (isStaff(profile?.role)) accountLinks.push(['#/users', 'Users', icons.users, route.view === 'users']);
   const zone = route.zone && findZone(route.zone);
   const zoneLinks = zone
     ? [
@@ -299,6 +303,7 @@ function topbar(route) {
       ${state.zones.length ? `<label class="zone-picker"><span class="visually-hidden">Website</span><select data-action="pick-zone"><option value="">All websites</option>${options}</select></label>` : '<span></span>'}
       <div class="topbar-right">
         <span class="preview-pill" title="No backend yet: data is stored in this browser">Preview</span>
+        ${isStaff(profile?.role) ? `<span class="role-pill">${ROLE_LABELS[profile.role]}</span>` : ''}
         <span class="plan-pill">${esc(state.plan)} plan</span>
         <span class="avatar" title="${esc(session.email)}">${esc(session.email[0].toUpperCase())}</span>
       </div>
@@ -476,12 +481,45 @@ const views = {
       <section class="panel">
         ${settingRow('Email', 'The address you sign in with.', `<span class="mono">${esc(session.email)}</span>`)}
         ${settingRow('Signed in with', 'Your identity provider.', '<span id="profile-provider" class="muted">Loading…</span>')}
+        ${settingRow('Role', 'What you can manage in Lyrcloud.', '<span id="profile-role" class="muted">Loading…</span>')}
         ${settingRow('Member since', 'When your Lyrcloud account was created.', '<span id="profile-created" class="muted">Loading…</span>')}
         ${settingRow('Plan', 'Default plan for new websites.', `
           <select data-action="account-plan">${['launch', 'scale', 'enterprise'].map((plan) => `<option${plan === state.plan ? ' selected' : ''}>${plan}</option>`).join('')}</select>`)}
         ${settingRow('Sign out', 'End your session in this browser.', '<button class="btn" data-action="sign-out">Sign out</button>')}
         ${settingRow('Reset preview data', 'Delete all websites and functions stored in this browser.', '<button class="btn danger" data-action="reset">Reset</button>')}
       </section>`;
+  },
+
+  users() {
+    if (profile && !isStaff(profile.role)) return views.missing();
+    const canChangeRoles = profile?.role === 'superadmin';
+    const roleButton = (user) => {
+      if (!canChangeRoles || user.role === 'superadmin') return '';
+      const next = user.role === 'admin' ? 'user' : 'admin';
+      return `<button class="btn small" data-action="set-role" data-id="${esc(user.userId)}" data-role="${next}">${next === 'admin' ? 'Make admin' : 'Remove admin'}</button>`;
+    };
+    const body = adminUsers.error
+      ? `<p class="form-error">${esc(adminUsers.error)}</p>`
+      : !adminUsers.list
+        ? '<p class="muted">Loading accounts…</p>'
+        : `<div class="table-scroll"><table class="table">
+            <thead><tr><th>Account</th><th>Signed in with</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead>
+            <tbody>${adminUsers.list
+              .map(
+                (user) => `
+              <tr>
+                <td><b>${esc(user.name || user.email || user.userId)}</b><br><small class="muted mono">${esc(user.email || '—')}</small></td>
+                <td>${esc(user.provider || '—')}</td>
+                <td><span class="role-badge role-${esc(user.role)}">${ROLE_LABELS[user.role] || esc(user.role)}</span></td>
+                <td>${user.lastLoginAt ? formatDate(user.lastLoginAt) : '—'}</td>
+                <td>${roleButton(user)}</td>
+              </tr>`,
+              )
+              .join('')}</tbody>
+          </table></div>`;
+    return `
+      ${pageHead('Users', canChangeRoles ? 'Everyone with a Lyrcloud account. You can grant or remove admin access.' : 'Everyone with a Lyrcloud account. Only the super admin can change roles.')}
+      <section class="panel">${body}</section>`;
   },
 
   missing() {
@@ -718,30 +756,55 @@ function render() {
     </div>`;
   app.classList.remove('sidebar-open');
   bindCharts();
-  if (currentRoute.view === 'settings') loadProfile();
+  if (currentRoute.view === 'settings') showProfile();
+  if (currentRoute.view === 'users' && !adminUsers.list && !adminUsers.loading) loadUsers();
   document.title = `${document.querySelector('.page-head h1')?.textContent || 'Dashboard'} | Lyrcloud`;
 }
 
-// Account profile from the Lyrcloud account API (GET /me).
-let profilePromise;
+// Account profile from the Lyrcloud account API (GET /me), loaded once per page load.
+// Its role decides whether the admin pages show; the API re-checks it on every admin request.
+let profile = null;
+let profileFailed = false;
 async function loadProfile() {
-  profilePromise ??= authFetch('/me').then((response) => {
+  try {
+    const response = await authFetch('/me');
     if (!response.ok) throw new Error(`me failed: ${response.status}`);
-    return response.json();
-  });
+    profile = await response.json();
+  } catch {
+    profileFailed = true;
+  }
+  render();
+}
+
+function showProfile() {
   const set = (id, text) => {
     const node = document.getElementById(id);
     if (node) node.textContent = text;
   };
-  try {
-    const profile = await profilePromise;
+  if (profile) {
     set('profile-provider', profile.provider || '—');
+    set('profile-role', ROLE_LABELS[profile.role] || profile.role || '—');
     set('profile-created', profile.createdAt ? new Date(profile.createdAt).toLocaleDateString() : '—');
-  } catch {
-    profilePromise = undefined;
-    set('profile-provider', 'Unavailable');
-    set('profile-created', 'Unavailable');
+  } else if (profileFailed) {
+    for (const id of ['profile-provider', 'profile-role', 'profile-created']) set(id, 'Unavailable');
   }
+}
+
+// Every account, for admins (GET /admin/users).
+const adminUsers = { list: null, error: '', loading: false };
+async function loadUsers() {
+  adminUsers.loading = true;
+  try {
+    const response = await authFetch('/admin/users');
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Couldn’t load accounts (${response.status})`);
+    adminUsers.list = data.users;
+    adminUsers.error = '';
+  } catch (error) {
+    adminUsers.error = error.message;
+  }
+  adminUsers.loading = false;
+  if (currentRoute.view === 'users') render();
 }
 
 const go = (hash) => {
@@ -852,6 +915,28 @@ const clickActions = {
     worker.routes.splice(Number(target.dataset.index), 1);
     save();
     render();
+  },
+  'set-role': async (target) => {
+    const user = adminUsers.list?.find((item) => item.userId === target.dataset.id);
+    const role = target.dataset.role;
+    const who = user?.email || 'this account';
+    if (!confirm(role === 'admin' ? `Give ${who} admin access?` : `Remove admin access from ${who}?`)) return;
+    target.disabled = true;
+    try {
+      const response = await authFetch(`/admin/users/${encodeURIComponent(target.dataset.id)}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ role }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+      adminUsers.list = adminUsers.list.map((item) => (item.userId === data.user.userId ? data.user : item));
+      render();
+      toast(role === 'admin' ? `${who} is now an admin` : `${who} is no longer an admin`);
+    } catch (error) {
+      target.disabled = false;
+      toast(error.message);
+    }
   },
   'sign-out': () => endSession(),
   reset: () => {
@@ -1041,3 +1126,4 @@ function runPreview(method, path) {
 }
 
 render();
+loadProfile();

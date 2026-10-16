@@ -10,12 +10,14 @@ FUNCTION_NAME="${FUNCTION_NAME:-lyrcloud-url-rewrite}"
 
 npm run check
 
-# 1. Publish the clean-URL function (/pricing -> /pricing/index.html) if not live yet.
+# 1. Publish the viewer-request function (apex -> www redirect, clean URLs) from infra/cloudfront/.
+FUNCTION_CODE="infra/cloudfront/url-rewrite.js"
 STAGE_ETAG="$(aws cloudfront describe-function --name "$FUNCTION_NAME" --stage DEVELOPMENT --query ETag --output text)"
-if ! aws cloudfront describe-function --name "$FUNCTION_NAME" --stage LIVE >/dev/null 2>&1; then
-  aws cloudfront publish-function --name "$FUNCTION_NAME" --if-match "$STAGE_ETAG" >/dev/null
-  echo "Published $FUNCTION_NAME"
-fi
+STAGE_ETAG="$(aws cloudfront update-function --name "$FUNCTION_NAME" --if-match "$STAGE_ETAG" \
+  --function-config "Comment=Apex to www redirect and clean URLs,Runtime=cloudfront-js-2.0" \
+  --function-code "fileb://$FUNCTION_CODE" --query ETag --output text)"
+aws cloudfront publish-function --name "$FUNCTION_NAME" --if-match "$STAGE_ETAG" >/dev/null
+echo "Published $FUNCTION_NAME"
 FUNCTION_ARN="$(aws cloudfront describe-function --name "$FUNCTION_NAME" --stage LIVE --query FunctionSummary.FunctionMetadata.FunctionARN --output text)"
 
 # 2. Upload the site. Assets live under content-hashed /assets/<hash>/ paths, so they can be cached
