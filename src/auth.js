@@ -68,11 +68,13 @@ export function isLoggedIn() {
   return Boolean(getTokens());
 }
 
-// Redirects the browser to Cognito's Hosted UI. No `identity_provider` param
-// is passed deliberately, so Hosted UI shows both the Google and GitHub
-// buttons and lets the user choose.
-// `returnTo` must be a same-site path; /callback.html sends the user there after sign-in.
-export async function redirectToLogin(returnTo = '/dash/') {
+// Redirects the browser to Cognito. Passing `provider` ('google' or 'github')
+// skips the Hosted UI chooser page and goes straight to that provider; without
+// it, Hosted UI shows both. `returnTo` must be a same-site path; /callback.html
+// sends the user there after sign-in.
+const IDENTITY_PROVIDERS = { google: 'GoogleOIDC', github: 'GitHubBridge' };
+
+export async function redirectToLogin(returnTo = '/dash/', provider) {
   sessionStorage.setItem(RETURN_KEY, returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/dash/');
   const verifier = randomString(32);
   const challenge = base64url(await sha256(verifier));
@@ -85,6 +87,7 @@ export async function redirectToLogin(returnTo = '/dash/') {
   url.searchParams.set('scope', 'openid email profile');
   url.searchParams.set('code_challenge', challenge);
   url.searchParams.set('code_challenge_method', 'S256');
+  if (IDENTITY_PROVIDERS[provider]) url.searchParams.set('identity_provider', IDENTITY_PROVIDERS[provider]);
   location.href = url.toString();
 }
 
@@ -142,17 +145,18 @@ export async function getValidAccessToken() {
   return tokens?.accessToken ?? null;
 }
 
-export async function authFetch(path, options = {}) {
+// Calls an API protected by this user pool's JWT authorizer (the Lyrcloud account API by default).
+export async function authFetch(path, options = {}, apiBase = ACCOUNT_API_BASE) {
   const accessToken = await getValidAccessToken();
   if (!accessToken) throw new Error('not_authenticated');
-  return fetch(`${ACCOUNT_API_BASE}${path}`, {
+  return fetch(`${apiBase}${path}`, {
     ...options,
     headers: { ...options.headers, authorization: `Bearer ${accessToken}` },
   });
 }
 
-export function takeReturnPath() {
-  const path = sessionStorage.getItem(RETURN_KEY) || '/dash/';
+export function takeReturnPath(fallback = '/dash/') {
+  const path = sessionStorage.getItem(RETURN_KEY) || fallback;
   sessionStorage.removeItem(RETURN_KEY);
   return path;
 }

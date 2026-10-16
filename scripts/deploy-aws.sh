@@ -74,11 +74,11 @@ DISTRIBUTION_ID="$("$AWS_BIN" cloudformation describe-stacks \
   --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue | [0]" \
   --output text)"
 
-# Assets are not content-hashed, so keep their cache short; HTML must always revalidate.
+# Assets are content-hashed (/assets/<hash>/), so cache them forever; HTML must always revalidate.
 "$AWS_BIN" s3 sync dist/ "s3://$BUCKET/" \
   --region "$REGION" \
   --delete \
-  --cache-control "public,max-age=3600" \
+  --cache-control "public,max-age=31536000,immutable" \
   --exclude "*.html"
 
 "$AWS_BIN" s3 sync dist/ "s3://$BUCKET/" \

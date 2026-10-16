@@ -1,0 +1,156 @@
+// Lyrcloud account API.
+//   GET /me                    the signed-in profile, including its role
+//   GET /admin/users           every account (admins and the super admin)
+//   PUT /admin/users/{userId}  { role: "admin" | "user" } (super admin only)
+//
+// Protected by an API Gateway HTTP API JWT authorizer validating the Cognito
+// *access token*. Access tokens only carry `sub`/`username`, not profile
+// attributes, so each request calls Cognito's GetUser over plain HTTPS (no
+// AWS SDK or IAM permission needed: GetUser is authenticated by the bearer
+// token itself) for email/name/picture, then upserts the profile row in
+// DynamoDB with the AWS SDK that ships with the Lambda Node.js runtime.
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { isStaff, publicProfile, roleChangeError, roleFor } from './roles.mjs';
+
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const TABLE_NAME = process.env.TABLE_NAME;
+const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || 'lyrclouds@gmail.com';
+const REGION = process.env.AWS_REGION || 'us-east-1';
+
+function jsonResponse(statusCode, body) {
+  return {
+    statusCode,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  };
+}
+
+const errorResponse = (statusCode, message) => jsonResponse(statusCode, { error: message });
+
+function attr(userAttributes, name) {
+  return userAttributes.find((a) => a.Name === name)?.Value ?? null;
+}
+
+async function cognitoGetUser(accessToken) {
+  const res = await fetch(`https://cognito-idp.${REGION}.amazonaws.com/`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-amz-json-1.1',
+      'x-amz-target': 'AWSCognitoIdentityProviderService.GetUser',
+    },
+    body: JSON.stringify({ AccessToken: accessToken }),
+  });
+  if (!res.ok) throw new Error(`GetUser failed: ${res.status}`);
+  return res.json();
+}
+
+// Refreshes the caller's profile from Cognito and returns the stored row.
+async function upsertCaller(event) {
+  const claims = event.requestContext?.authorizer?.jwt?.claims;
+  const userId = claims?.sub;
+  if (!userId) return null;
+
+  const authHeader = event.headers?.authorization || event.headers?.Authorization || '';
+  const accessToken = authHeader.replace(/^Bearer\s+/i, '');
+
+  let email = null;
+  let name = null;
+  let picture = null;
+  let provider = (claims.username || 'unknown').split('_')[0];
+
+  try {
+    const userResult = await cognitoGetUser(accessToken);
+    email = attr(userResult.UserAttributes, 'email');
+    name = attr(userResult.UserAttributes, 'name');
+    picture = attr(userResult.UserAttributes, 'picture');
+    provider = (userResult.Username || provider).split('_')[0];
+  } catch (err) {
+    console.error('cognitoGetUser failed', err);
+  }
+
+  const now = new Date().toISOString();
+  const existing = (await ddb.send(new GetCommand({ TableName: TABLE_NAME, Key: { userId } }))).Item;
+
+  const profile = {
+    ...existing,
+    userId,
+    email: email ?? existing?.email ?? null,
+    name: name ?? existing?.name ?? null,
+    picture: picture ?? existing?.picture ?? null,
+    provider,
+    createdAt: existing?.createdAt || now,
+    lastLoginAt: now,
+  };
+
+  await ddb.send(new PutCommand({ TableName: TABLE_NAME, Item: profile }));
+  return profile;
+}
+
+async function listProfiles() {
+  const items = [];
+  let ExclusiveStartKey;
+  do {
+    const page = await ddb.send(new ScanCommand({ TableName: TABLE_NAME, ExclusiveStartKey }));
+    items.push(...(page.Items || []));
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return items;
+}
+
+function parseBody(event) {
+  try {
+    const raw = event.isBase64Encoded ? Buffer.from(event.body || '', 'base64').toString('utf8') : event.body;
+    return JSON.parse(raw || '{}');
+  } catch {
+    return null;
+  }
+}
+
+export const handler = async (event) => {
+  const method = event.requestContext?.http?.method;
+  const path = event.requestContext?.http?.path || '';
+
+  const caller = await upsertCaller(event);
+  if (!caller) return errorResponse(401, 'unauthorized');
+  const callerRole = roleFor(caller, SUPER_ADMIN_EMAIL);
+
+  if (method === 'GET' && path === '/me') {
+    return jsonResponse(200, publicProfile(caller, SUPER_ADMIN_EMAIL));
+  }
+
+  if (path === '/admin/users' || path.startsWith('/admin/users/')) {
+    if (!isStaff(callerRole)) return errorResponse(403, 'Admins only.');
+
+    if (method === 'GET' && path === '/admin/users') {
+      const users = (await listProfiles())
+        .map((profile) => publicProfile(profile, SUPER_ADMIN_EMAIL))
+        .sort((a, b) => String(b.lastLoginAt).localeCompare(String(a.lastLoginAt)));
+      return jsonResponse(200, { users });
+    }
+
+    if (method === 'PUT') {
+      const userId = decodeURIComponent(event.pathParameters?.userId || path.slice('/admin/users/'.length));
+      const body = parseBody(event);
+      if (!body) return errorResponse(400, 'Invalid JSON body.');
+      const target = (await ddb.send(new GetCommand({ TableName: TABLE_NAME, Key: { userId } }))).Item;
+      if (!target) return errorResponse(404, 'No such user.');
+
+      const refused = roleChangeError(callerRole, roleFor(target, SUPER_ADMIN_EMAIL), body.role);
+      if (refused) return errorResponse(...refused);
+
+      const { Attributes } = await ddb.send(new UpdateCommand({
+        TableName: TABLE_NAME,
+        Key: { userId },
+        UpdateExpression: 'SET #role = :role, roleUpdatedAt = :now, roleUpdatedBy = :by',
+        ConditionExpression: 'attribute_exists(userId)',
+        ExpressionAttributeNames: { '#role': 'role' },
+        ExpressionAttributeValues: { ':role': body.role, ':now': new Date().toISOString(), ':by': caller.userId },
+        ReturnValues: 'ALL_NEW',
+      }));
+      return jsonResponse(200, { user: publicProfile(Attributes, SUPER_ADMIN_EMAIL) });
+    }
+  }
+
+  return errorResponse(404, 'not_found');
+};

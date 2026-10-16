@@ -158,6 +158,31 @@
   color: var(--ink-soft);
 }
 
+.role-pill,
+.role-badge {
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.role-pill,
+.role-badge.role-superadmin {
+  background: var(--brand-tint);
+  color: var(--brand-strong);
+}
+
+.role-badge.role-admin {
+  background: var(--badge-bg);
+  color: var(--badge-ink);
+}
+
+.role-badge.role-user {
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
 .avatar {
   display: grid;
   place-items: center;
