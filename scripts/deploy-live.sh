@@ -18,9 +18,10 @@ if ! aws cloudfront describe-function --name "$FUNCTION_NAME" --stage LIVE >/dev
 fi
 FUNCTION_ARN="$(aws cloudfront describe-function --name "$FUNCTION_NAME" --stage LIVE --query FunctionSummary.FunctionMetadata.FunctionARN --output text)"
 
-# 2. Upload the site. HTML always revalidates; assets aren't content-hashed, so cache them briefly.
-#    No --delete: the bucket is versioned, and stray files are harmless.
-aws s3 sync dist/ "s3://$BUCKET/" --exclude "*.html" --cache-control "public,max-age=3600"
+# 2. Upload the site. Assets live under content-hashed /assets/<hash>/ paths, so they can be cached
+#    forever; HTML always revalidates. No --delete: the bucket is versioned, and stray files are harmless.
+aws s3 sync dist/assets/ "s3://$BUCKET/assets/" --cache-control "public,max-age=31536000,immutable"
+aws s3 sync dist/ "s3://$BUCKET/" --exclude "*.html" --exclude "assets/*" --cache-control "public,max-age=3600"
 aws s3 sync dist/ "s3://$BUCKET/" --exclude "*" --include "*.html" \
   --cache-control "public,max-age=0,must-revalidate" --content-type "text/html; charset=utf-8"
 

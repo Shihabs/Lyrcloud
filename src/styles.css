@@ -1377,3 +1377,68 @@ code.inline {
   font: inherit;
   cursor: pointer;
 }
+
+/* Mobile header: brand and menu toggle stay on the top row; the menu opens as a panel below. */
+@media (max-width: 1020px) {
+  .menu-button {
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    font-size: 1.2rem;
+    cursor: pointer;
+  }
+
+  .site-header.nav-open {
+    align-items: center;
+    max-height: 100vh;
+    overflow-y: auto;
+  }
+
+  .site-header.nav-open .brand {
+    order: -2;
+    margin-right: auto;
+  }
+
+  .site-header.nav-open .menu-button {
+    order: -1;
+  }
+
+  .site-header.nav-open nav {
+    gap: 0;
+    padding-top: 10px;
+  }
+
+  .site-header.nav-open nav > a,
+  .site-header.nav-open .nav-dropdown > a {
+    display: block;
+    width: 100%;
+    padding: 14px 4px;
+    border-bottom: 1px solid var(--line);
+    font-size: 1.05rem;
+  }
+
+  .site-header.nav-open .nav-dropdown {
+    width: 100%;
+  }
+
+  .site-header.nav-open .nav-dropdown > a span {
+    display: none;
+  }
+
+  .site-header.nav-open .header-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    padding: 16px 0 8px;
+  }
+
+  .site-header.nav-open .header-actions .link-button,
+  .site-header.nav-open .header-actions .user-pill {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    min-height: 0;
+    padding: 0 4px 6px;
+  }
+}
