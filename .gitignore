@@ -3,3 +3,5 @@ dist/
 *.log
 .aws-cli/
 .local/
+dist-lyrsoft/
+node_modules/

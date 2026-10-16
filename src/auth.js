@@ -145,17 +145,18 @@ export async function getValidAccessToken() {
   return tokens?.accessToken ?? null;
 }
 
-export async function authFetch(path, options = {}) {
+// Calls an API protected by this user pool's JWT authorizer (the Lyrcloud account API by default).
+export async function authFetch(path, options = {}, apiBase = ACCOUNT_API_BASE) {
   const accessToken = await getValidAccessToken();
   if (!accessToken) throw new Error('not_authenticated');
-  return fetch(`${ACCOUNT_API_BASE}${path}`, {
+  return fetch(`${apiBase}${path}`, {
     ...options,
     headers: { ...options.headers, authorization: `Bearer ${accessToken}` },
   });
 }
 
-export function takeReturnPath() {
-  const path = sessionStorage.getItem(RETURN_KEY) || '/dash/';
+export function takeReturnPath(fallback = '/dash/') {
+  const path = sessionStorage.getItem(RETURN_KEY) || fallback;
   sessionStorage.removeItem(RETURN_KEY);
   return path;
 }

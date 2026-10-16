@@ -3,8 +3,11 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 
-const root = join(process.cwd(), 'dist');
-const port = Number(process.env.PORT || 5173);
+// SITE=lyrsoft serves the Lyrsoft Work app (scripts/build-lyrsoft.mjs) instead of the Lyrcloud site.
+const lyrsoft = process.env.SITE === 'lyrsoft';
+const root = join(process.cwd(), lyrsoft ? 'dist-lyrsoft' : 'dist');
+const buildScript = lyrsoft ? 'scripts/build-lyrsoft.mjs' : 'scripts/build.mjs';
+const port = Number(process.env.PORT || (lyrsoft ? 5174 : 5173));
 const types = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.css', 'text/css; charset=utf-8'],
@@ -13,7 +16,7 @@ const types = new Map([
 ]);
 
 // Rebuild on every page request so edits to site/ and src/ show up on refresh.
-const build = () => execFileSync(process.execPath, ['scripts/build.mjs'], { stdio: 'ignore' });
+const build = () => execFileSync(process.execPath, [buildScript], { stdio: 'ignore' });
 build();
 
 // Mirrors the CloudFront viewer-request rewrite in infra/aws/static-site.yml.
@@ -42,5 +45,5 @@ createServer(async (request, response) => {
     response.end(await readFile(join(root, '404.html')).catch(() => 'Not found'));
   }
 }).listen(port, '0.0.0.0', () => {
-  console.log(`Lyrcloud dev server running at http://localhost:${port}`);
+  console.log(`${lyrsoft ? 'Lyrsoft' : 'Lyrcloud'} dev server running at http://localhost:${port}`);
 });
