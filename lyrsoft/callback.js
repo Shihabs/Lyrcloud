@@ -17,7 +17,7 @@ if (error) {
   fail('Missing sign-in code.');
 } else {
   exchangeCodeForTokens(code)
-    .then(() => location.replace(takeReturnPath('/')))
+    .then(() => location.replace(takeReturnPath('/app/')))
     .catch((err) => {
       console.error(err);
       fail('Sign-in failed. Please try again.');

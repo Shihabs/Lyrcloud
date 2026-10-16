@@ -4,7 +4,7 @@
 #   2. mail: SES identities for every mail domain, the active receipt rule set, and the DNS records to add
 #   3. lyrsoft.com sign-in URLs on the shared Lyrcloud Cognito app client (first run only)
 #   4. the lyrsoft.com TLS certificate (first run: prints DNS records to add in Cloudflare, then waits)
-#   5. hosting (infra/aws/lyrsoft-site.yml) and the built app (lyrsoft/)
+#   5. hosting (infra/aws/lyrsoft-site.yml), the website (lyrsoft/home.html) and the app (lyrsoft/, served at /app/)
 # Safe to re-run; later runs just ship new code.
 set -euo pipefail
 
@@ -31,8 +31,10 @@ npx esbuild work=api/work/index.mjs inbound=api/mail/inbound.mjs --bundle --plat
 (cd "$build" && zip -q -X code.zip work.mjs inbound.mjs)
 key="work-api/$(sha256sum "$build/code.zip" | cut -d' ' -f1).zip"
 aws s3 cp "$build/code.zip" "s3://$ARTIFACTS_BUCKET/$key" >/dev/null
+# MAIL_DOMAINS=a.com,b.com changes the receiving domains; otherwise the stack keeps its current list.
 aws cloudformation deploy --stack-name "$API_STACK" --template-file infra/aws/lyrsoft-work-api.yml \
-  --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --parameter-overrides "LambdaCodeS3Key=$key"
+  --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset \
+  --parameter-overrides "LambdaCodeS3Key=$key" ${MAIL_DOMAINS:+"MailDomains=$MAIL_DOMAINS"}
 API_BASE="$(output "$API_STACK" WorkApiBaseUrl)"
 echo "Work API: $API_BASE"
 

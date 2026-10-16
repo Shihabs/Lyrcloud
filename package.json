@@ -9,7 +9,7 @@
     "check": "node scripts/check.mjs",
     "create:s3": "bash scripts/create-s3.sh",
     "deploy:aws": "bash scripts/deploy-aws.sh",
-    "test": "node --test api/account/roles.test.mjs api/work/model.test.mjs api/mail/model.test.mjs",
+    "test": "node --test api/account/roles.test.mjs api/work/model.test.mjs api/work/leads.test.mjs api/mail/model.test.mjs",
     "lyrsoft:api": "node scripts/lyrsoft-dev-api.mjs",
     "lyrsoft:dev": "SITE=lyrsoft node scripts/dev-server.mjs",
     "lyrsoft:build": "node scripts/build-lyrsoft.mjs"

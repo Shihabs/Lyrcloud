@@ -26,7 +26,7 @@ register('data:text/javascript,' + encodeURIComponent(`
 
 process.env.TABLE_NAME = 'lyrsoft-work';
 process.env.MAIL_BUCKET = 'lyrsoft-mail-dev';
-process.env.MAIL_DOMAINS ??= 'lyrcloud.com,lyrtrip.com,lyrshop.com,lyrpay.com,mrshihab.com';
+process.env.MAIL_DOMAINS ??= 'lyrsoft.com,lyrcloud.com,lyrtrip.com,lyrshop.com,lyrpay.com,mrshihab.com';
 const port = Number(process.env.PORT || 8787);
 
 // Fake tokens look like "dev.<email>". Cognito's GetUser is answered locally.
@@ -108,11 +108,12 @@ createServer(async (request, response) => {
     });
   }
   const token = (request.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  if (!token.startsWith('dev.')) return response.writeHead(401, { ...cors, 'content-type': 'application/json' }).end('{"message":"Unauthorized"}');
+  const isPublic = request.method === 'POST' && url.pathname === '/public/contact'; // AuthorizationType NONE in the template
+  if (!isPublic && !token.startsWith('dev.')) return response.writeHead(401, { ...cors, 'content-type': 'application/json' }).end('{"message":"Unauthorized"}');
   const result = await handler({
     requestContext: {
-      http: { method: request.method, path: url.pathname },
-      authorizer: { jwt: { claims: { sub: `sub-${token.slice(4)}` } } },
+      http: { method: request.method, path: url.pathname, sourceIp: request.socket.remoteAddress },
+      authorizer: isPublic ? undefined : { jwt: { claims: { sub: `sub-${token.slice(4)}` } } },
     },
     headers: { authorization: request.headers.authorization },
     rawQueryString: url.search.slice(1),
