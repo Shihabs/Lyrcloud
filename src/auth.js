@@ -1,0 +1,166 @@
+// Shared auth helpers for Lyrcloud's Cognito Hosted UI login (Google native,
+// GitHub via a custom OIDC bridge — see infra/aws/github-bridge.yml).
+// Used by the site header (src/main.js), /callback.html (token exchange), and
+// the dashboard (src/dash.js, via src/session.js).
+//
+// Tokens live in sessionStorage (cleared when the tab closes) rather than
+// localStorage, since there's no need for a persistent "remember me" session
+// yet. The access_token (not the id_token) is what's sent to the account
+// API — Cognito access tokens carry `client_id` instead of `aud`, which is
+// exactly what the API's JWT authorizer is configured to check.
+
+export const COGNITO_DOMAIN = 'lyrcloud-auth.auth.us-east-1.amazoncognito.com';
+export const CLIENT_ID = '5h78n6dkjbhq92423lscfllj6t';
+export const ACCOUNT_API_BASE = 'https://wcqz7ix4t7.execute-api.us-east-1.amazonaws.com';
+
+const REDIRECT_URI = `${location.origin}/callback.html`;
+const LOGOUT_URI = `${location.origin}/index.html`;
+const TOKENS_KEY = 'lyrcloud.auth.tokens';
+const VERIFIER_KEY = 'lyrcloud.auth.pkce_verifier';
+const RETURN_KEY = 'lyrcloud.auth.return_to';
+
+function base64url(bytes) {
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function sha256(text) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return new Uint8Array(digest);
+}
+
+function randomString(length) {
+  return base64url(crypto.getRandomValues(new Uint8Array(length)));
+}
+
+export function decodeJwt(token) {
+  try {
+    const payload = token.split('.')[1];
+    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    return null;
+  }
+}
+
+export function getTokens() {
+  try {
+    return JSON.parse(sessionStorage.getItem(TOKENS_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+function storeTokens(tokenResponse) {
+  const tokens = {
+    accessToken: tokenResponse.access_token,
+    idToken: tokenResponse.id_token,
+    refreshToken: tokenResponse.refresh_token,
+    expiresAt: Date.now() + tokenResponse.expires_in * 1000,
+  };
+  sessionStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
+  return tokens;
+}
+
+export function clearTokens() {
+  sessionStorage.removeItem(TOKENS_KEY);
+}
+
+export function isLoggedIn() {
+  return Boolean(getTokens());
+}
+
+// Redirects the browser to Cognito's Hosted UI. No `identity_provider` param
+// is passed deliberately, so Hosted UI shows both the Google and GitHub
+// buttons and lets the user choose.
+// `returnTo` must be a same-site path; /callback.html sends the user there after sign-in.
+export async function redirectToLogin(returnTo = '/dash/') {
+  sessionStorage.setItem(RETURN_KEY, returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/dash/');
+  const verifier = randomString(32);
+  const challenge = base64url(await sha256(verifier));
+  sessionStorage.setItem(VERIFIER_KEY, verifier);
+
+  const url = new URL(`https://${COGNITO_DOMAIN}/oauth2/authorize`);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('client_id', CLIENT_ID);
+  url.searchParams.set('redirect_uri', REDIRECT_URI);
+  url.searchParams.set('scope', 'openid email profile');
+  url.searchParams.set('code_challenge', challenge);
+  url.searchParams.set('code_challenge_method', 'S256');
+  location.href = url.toString();
+}
+
+export async function exchangeCodeForTokens(code) {
+  const verifier = sessionStorage.getItem(VERIFIER_KEY);
+  sessionStorage.removeItem(VERIFIER_KEY);
+  if (!verifier) throw new Error('missing_pkce_verifier');
+
+  const body = new URLSearchParams({
+    grant_type: 'authorization_code',
+    client_id: CLIENT_ID,
+    code,
+    redirect_uri: REDIRECT_URI,
+    code_verifier: verifier,
+  });
+
+  const res = await fetch(`https://${COGNITO_DOMAIN}/oauth2/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!res.ok) throw new Error(`token exchange failed: ${res.status}`);
+  return storeTokens(await res.json());
+}
+
+async function refreshTokens() {
+  const tokens = getTokens();
+  if (!tokens?.refreshToken) return null;
+
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    client_id: CLIENT_ID,
+    refresh_token: tokens.refreshToken,
+  });
+
+  const res = await fetch(`https://${COGNITO_DOMAIN}/oauth2/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!res.ok) {
+    clearTokens();
+    return null;
+  }
+  const refreshed = await res.json();
+  // Cognito's refresh grant doesn't return a new refresh_token; keep the old one.
+  return storeTokens({ ...refreshed, refresh_token: tokens.refreshToken });
+}
+
+export async function getValidAccessToken() {
+  let tokens = getTokens();
+  if (!tokens) return null;
+  if (Date.now() < tokens.expiresAt - 30_000) return tokens.accessToken;
+  tokens = await refreshTokens();
+  return tokens?.accessToken ?? null;
+}
+
+export async function authFetch(path, options = {}) {
+  const accessToken = await getValidAccessToken();
+  if (!accessToken) throw new Error('not_authenticated');
+  return fetch(`${ACCOUNT_API_BASE}${path}`, {
+    ...options,
+    headers: { ...options.headers, authorization: `Bearer ${accessToken}` },
+  });
+}
+
+export function takeReturnPath() {
+  const path = sessionStorage.getItem(RETURN_KEY) || '/dash/';
+  sessionStorage.removeItem(RETURN_KEY);
+  return path;
+}
+
+export function logout() {
+  clearTokens();
+  const url = new URL(`https://${COGNITO_DOMAIN}/logout`);
+  url.searchParams.set('client_id', CLIENT_ID);
+  url.searchParams.set('logout_uri', LOGOUT_URI);
+  location.href = url.toString();
+}

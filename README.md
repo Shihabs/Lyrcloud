@@ -1,6 +1,6 @@
-# Lyrcloud Landing Page
+# Lyrcloud
 
-A Cloudflare-inspired, original static landing page for `www.lyrcloud.com`. The site is intentionally dependency-free and can be served by any static host.
+The Lyrcloud website (`www.lyrcloud.com`): a Cloudflare-style multi-page marketing site plus a preview dashboard at `/dash/`. No dependencies — just Node.js.
 
 ## Commands
 
@@ -12,11 +12,37 @@ npm run create:s3
 npm run deploy:aws
 ```
 
-- `npm run dev` starts a small local Node.js static server on port `5173`.
-- `npm run check` verifies that the required source files and core Lyrcloud content are present.
-- `npm run build` copies the static assets into `dist/`.
+- `npm run dev` starts a local server on port `5173` that rebuilds on every page load.
+- `npm run check` builds the site, then fails on missing titles or broken internal links.
+- `npm run build` renders every page into `dist/`.
 - `npm run create:s3` creates the private S3 bucket stack for static site assets.
 - `npm run deploy:aws` builds the site, creates/updates the AWS stack, syncs `dist/` to S3, and invalidates CloudFront.
+
+## Project layout
+
+| Path | What it is |
+|---|---|
+| `site/layout.mjs` | Shared header (with the Products mega-menu), footer, and HTML shell |
+| `site/products.mjs` | Product catalog — each entry becomes `/products/<slug>/` and a nav item |
+| `site/pages.mjs` | Every page and its route (`/pricing/` → `dist/pricing/index.html`) |
+| `src/styles.css` | Site styles |
+| `src/dash.js`, `src/dash.css` | Dashboard single-page app (hash routes such as `/dash/#/zones/example.com/dns`) |
+| `src/auth.js` | Cognito Hosted UI sign-in (Google, GitHub) with PKCE; `/callback.html` completes it |
+
+To add a page, add an entry to the `pages` array in `site/pages.mjs`. To add a product, add it to `site/products.mjs`.
+
+## Sign-in and dashboard
+
+Sign-in is real: `/login/` and `/sign-up/` send visitors to the Cognito Hosted UI (`lyrcloud-users` pool), which offers Google and GitHub. Cognito only accepts `/callback.html` as the redirect and `/index.html` as the logout page (on `https://www.lyrcloud.com` and `http://localhost:5173`), so keep those paths. Profile data in Settings comes from the account API (`GET /me`).
+
+The dashboard itself is not backed by a server yet:
+
+- **Real:** adding a site scans its existing DNS records over public DNS-over-HTTPS (dns.google), and “Check nameservers” looks up the domain’s live NS records. The Edge Functions preview runs code in an isolated Web Worker in the browser.
+- **Preview only:** websites, DNS records, functions, and settings are stored in the visitor’s browser (localStorage). Analytics and security events are generated sample data and labeled as such.
+
+## Theme
+
+Light by default; dark when the visitor’s OS prefers dark. Colors are tokens on `:root` in `src/styles.css`.
 
 ## AWS hosting
 
