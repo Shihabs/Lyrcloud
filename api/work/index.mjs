@@ -7,10 +7,15 @@
 //   WS#<ws>     BOARD#<board>      board (columns, groups)
 //   BOARD#<b>   ITEM#<item>        item
 //   ITEM#<i>    UPDATE#<iso>#<id>  item update (comment)
+//   CONFIG      LEADS              where website enquiries go: { wsId, boardId }
+//   RATE#contact#<ip>  <hour>      contact form submissions per IP per hour (expires via TTL)
 //
 // Members are keyed by email, so people can be invited before they first sign in. Emails are
 // only trusted from Google sign-ins (Cognito doesn't mark them verified, and the GitHub bridge
 // passes through whatever GitHub reports), so other providers are refused.
+//
+// One route is public: POST /public/contact, the lyrsoft.com contact form. Each enquiry becomes an
+// item on the "Website leads" board and a conversation in the hello@lyrsoft.com Lyrsoft Mail inbox.
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   BatchWriteCommand,
@@ -27,6 +32,7 @@ import { roleFor, SUPER_ADMIN_PROVIDER } from '../account/roles.mjs';
 import { canUseMailbox } from '../mail/model.mjs';
 import { registerMailRoutes } from '../mail/routes.mjs';
 import { createMailStore } from '../mail/store.mjs';
+import { CONTACT_LIMIT_PER_HOUR, cleanContact, contactSubject, contactText, leadsBoard, leadValues } from './leads.mjs';
 import {
   can,
   cleanColumns,
@@ -48,6 +54,8 @@ const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE_NAME;
 const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || 'lyrclouds@gmail.com';
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const MAIL_BUCKET = process.env.MAIL_BUCKET;
+const CONTACT_MAILBOX = (process.env.CONTACT_MAILBOX || 'hello@lyrsoft.com').toLowerCase();
+const SITE_URL = (process.env.SITE_URL || 'https://lyrsoft.com').replace(/\/$/, '');
 const s3 = new S3Client({});
 const mailStore = createMailStore({ ddb, s3, table: TABLE, bucket: MAIL_BUCKET });
 
@@ -182,6 +190,17 @@ const memberRow = (wsId, wsName, email, role, extra = {}) => ({
   ...extra,
 });
 
+async function createWorkspace({ name, ownerEmail, ownerUserId, ownerName, firstBoard }) {
+  const wsId = newId();
+  const createdAt = now();
+  const workspace = { PK: `WS#${wsId}`, SK: 'META', GSI1PK: 'WORKSPACE', GSI1SK: `${createdAt}#${wsId}`, wsId, name, ownerEmail, createdAt };
+  await put(workspace);
+  await put(memberRow(wsId, name, ownerEmail, 'owner', { userId: ownerUserId, name: ownerName, addedAt: createdAt, addedBy: ownerEmail }));
+  const boardId = newId();
+  await put({ PK: `WS#${wsId}`, SK: `BOARD#${boardId}`, boardId, wsId, ...firstBoard, createdAt, updatedAt: createdAt, createdBy: ownerEmail });
+  return { workspace, boardId };
+}
+
 // ------------------------------------------------------------------ routes
 
 const routes = [];
@@ -223,14 +242,13 @@ route('GET', '/me', async (me) => {
 });
 
 route('POST', '/workspaces', async (me, _p, body) => {
-  const name = cleanName(body.name, 'Workspace', 80);
-  const wsId = newId();
-  const createdAt = now();
-  const workspace = { PK: `WS#${wsId}`, SK: 'META', GSI1PK: 'WORKSPACE', GSI1SK: `${createdAt}#${wsId}`, wsId, name, ownerEmail: me.email, createdAt };
-  await put(workspace);
-  await put(memberRow(wsId, name, me.email, 'owner', { userId: me.userId, name: me.name, addedAt: createdAt, addedBy: me.email }));
-  const boardId = newId();
-  await put({ PK: `WS#${wsId}`, SK: `BOARD#${boardId}`, boardId, wsId, ...defaultBoard('Getting started'), createdAt, updatedAt: createdAt, createdBy: me.email });
+  const { workspace, boardId } = await createWorkspace({
+    name: cleanName(body.name, 'Workspace', 80),
+    ownerEmail: me.email,
+    ownerUserId: me.userId,
+    ownerName: me.name,
+    firstBoard: defaultBoard('Getting started'),
+  });
   return [201, { workspace: workspaceOut(workspace, 'owner'), firstBoardId: boardId }];
 });
 
@@ -426,6 +444,92 @@ route('POST', '/workspaces/{ws}/boards/{board}/items/{item}/updates', async (me,
 
 registerMailRoutes(route, { store: mailStore, s3, ses: new SESv2Client({}), bucket: MAIL_BUCKET, HttpError });
 
+// ------------------------------------------------------------------ public contact form
+
+// Counts this IP's submissions in the current hour; false once over the limit.
+async function underContactLimit(ip) {
+  const { Attributes } = await ddb.send(new UpdateCommand({
+    TableName: TABLE,
+    Key: { PK: `RATE#contact#${ip}`, SK: now().slice(0, 13) },
+    UpdateExpression: 'ADD hits :one SET expiresAt = :expires',
+    ExpressionAttributeValues: { ':one': 1, ':expires': Math.floor(Date.now() / 1000) + 2 * 3600 },
+    ReturnValues: 'ALL_NEW',
+  }));
+  return Attributes.hits <= CONTACT_LIMIT_PER_HOUR;
+}
+
+// The leads board lives in a "Lyrsoft" workspace owned by the super admin, created with the first
+// enquiry. If someone deletes the board or workspace, the next enquiry sets it up again.
+async function leadsLocation() {
+  const config = await get('CONFIG', 'LEADS');
+  if (config && (await get(`WS#${config.wsId}`, `BOARD#${config.boardId}`))) return config;
+  const { workspace, boardId } = await createWorkspace({ name: 'Lyrsoft', ownerEmail: SUPER_ADMIN_EMAIL, firstBoard: leadsBoard() });
+  const location = { PK: 'CONFIG', SK: 'LEADS', wsId: workspace.wsId, boardId };
+  await put(location);
+  return location;
+}
+
+async function contactMailbox() {
+  const existing = await mailStore.getMailbox(CONTACT_MAILBOX);
+  if (existing) return existing;
+  const mailbox = {
+    PK: `MAILBOX#${CONTACT_MAILBOX}`,
+    SK: 'META',
+    GSI1PK: 'MAILBOX',
+    GSI1SK: CONTACT_MAILBOX,
+    address: CONTACT_MAILBOX,
+    displayName: 'Lyrsoft',
+    members: [],
+    catchAll: false,
+    createdAt: now(),
+    createdBy: 'website',
+  };
+  await mailStore.putMailbox(mailbox);
+  return mailbox;
+}
+
+async function submitContact(event) {
+  const body = parseBody(event);
+  if (body === null) throw new HttpError(400, 'Invalid JSON body.');
+  const contact = cleanContact(body);
+  if (!contact) return json(200, { ok: true }); // bot
+  if (!(await underContactLimit(event.requestContext?.http?.sourceIp || 'unknown'))) {
+    throw new HttpError(429, 'Too many messages from your network. Please try again in an hour.');
+  }
+
+  const { wsId, boardId } = await leadsLocation();
+  const createdAt = now();
+  const itemId = newId();
+  const board = await get(`WS#${wsId}`, `BOARD#${boardId}`);
+  await put({
+    PK: `BOARD#${boardId}`,
+    SK: `ITEM#${itemId}`,
+    itemId,
+    boardId,
+    groupId: board.groups[0].id,
+    name: contact.company ? `${contact.name} · ${contact.company}` : contact.name,
+    values: cleanValues(leadValues(contact), board.columns),
+    position: -Date.now(), // newest first
+    createdAt,
+    updatedAt: createdAt,
+    updatedBy: contact.email,
+  });
+
+  const mailbox = await contactMailbox();
+  const leadUrl = `${SITE_URL}/app/#/w/${wsId}/b/${boardId}?item=${itemId}`;
+  await mailStore.saveMessage(mailbox.address, {
+    direction: 'in',
+    from: { name: contact.name, address: contact.email },
+    to: [mailbox.address],
+    replyTo: [contact.email],
+    subject: contactSubject(contact),
+    text: contactText(contact, leadUrl),
+    createdAt,
+  });
+  await mailStore.touchMailbox(mailbox.address, 'lastReceivedAt');
+  return json(201, { ok: true });
+}
+
 // ------------------------------------------------------------------ entry point
 
 function parseBody(event) {
@@ -443,6 +547,7 @@ export const handler = async (event) => {
   const method = event.requestContext?.http?.method;
   const path = event.requestContext?.http?.path || '';
   try {
+    if (method === 'POST' && path === '/public/contact') return await submitContact(event);
     const me = await identify(event);
     for (const { method: m, re, keys, fn } of routes) {
       const match = m === method && path.match(re);

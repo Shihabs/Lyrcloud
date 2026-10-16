@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Lyrsoft work API (workspaces, boards, items, shared mailboxes) backed by DynamoDB, protected by the Lyrcloud Cognito user pool, plus SES inbound mail.
+Description: Lyrsoft work API (workspaces, boards, items, shared mailboxes) backed by DynamoDB, protected by the Lyrcloud Cognito user pool, plus SES inbound mail and the public lyrsoft.com contact form.
 # Deploy with scripts/deploy-lyrsoft.sh. Lambda source: api/work/ and api/mail/, bundled by esbuild into
 # work.mjs (the API) and inbound.mjs (SES receipt rule target).
 
@@ -27,11 +27,15 @@ Parameters:
     Default: 'https://lyrsoft.com,http://localhost:5174'
   MailDomains:
     Type: CommaDelimitedList
-    Default: 'lyrcloud.com,lyrtrip.com,lyrshop.com,lyrpay.com,mrshihab.com'
+    Default: 'lyrsoft.com,lyrcloud.com,lyrtrip.com,lyrshop.com,lyrpay.com,mrshihab.com'
     Description: Domains whose mail SES receives into Lyrsoft mailboxes (each needs an MX record and a verified SES identity).
   ReceiptRuleSetName:
     Type: String
     Default: lyrsoft-inbound
+  ContactMailbox:
+    Type: String
+    Default: hello@lyrsoft.com
+    Description: Lyrsoft Mail inbox that website contact-form enquiries are filed into (created on first use).
 
 Resources:
   WorkTable:
@@ -43,6 +47,9 @@ Resources:
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
+      TimeToLiveSpecification: # contact-form rate-limit counters
+        AttributeName: expiresAt
+        Enabled: true
       AttributeDefinitions:
         - AttributeName: PK
           AttributeType: S
@@ -128,6 +135,10 @@ Resources:
           SUPER_ADMIN_EMAIL: !Ref SuperAdminEmail
           MAIL_BUCKET: !Ref MailBucket
           MAIL_DOMAINS: !Join [',', !Ref MailDomains]
+          CONTACT_MAILBOX: !Ref ContactMailbox
+          SITE_URL: !Sub
+            - 'https://${Origin}'
+            - Origin: !Select [2, !Split ['/', !Select [0, !Ref AllowedOrigins]]]
       Code:
         S3Bucket: !Ref ArtifactsBucketName
         S3Key: !Ref LambdaCodeS3Key
@@ -331,8 +342,19 @@ Resources:
       AuthorizationType: JWT
       AuthorizerId: !Ref JwtAuthorizer
 
+  # The lyrsoft.com contact form: the only unauthenticated route. More specific than POST /{proxy+},
+  # so API Gateway picks it. Throttled hard here, and per IP in the Lambda.
+  ContactRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'POST /public/contact'
+      Target: !Sub 'integrations/${LambdaIntegration}'
+      AuthorizationType: NONE
+
   Stage:
     Type: AWS::ApiGatewayV2::Stage
+    DependsOn: ContactRoute
     Properties:
       ApiId: !Ref HttpApi
       StageName: '$default'
@@ -340,6 +362,10 @@ Resources:
       DefaultRouteSettings:
         ThrottlingBurstLimit: 100
         ThrottlingRateLimit: 50
+      RouteSettings:
+        'POST /public/contact':
+          ThrottlingBurstLimit: 5
+          ThrottlingRateLimit: 1
 
   LambdaInvokePermission:
     Type: AWS::Lambda::Permission

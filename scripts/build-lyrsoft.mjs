@@ -1,9 +1,9 @@
-// Builds the Lyrsoft Work app (lyrsoft/) into dist-lyrsoft/.
+// Builds lyrsoft.com (lyrsoft/) into dist-lyrsoft/: the company website at / and the Lyrsoft Work app at /app/.
 // Like the Lyrcloud site, assets go under /assets/<content hash>/ so they can be cached forever.
 // The shared Cognito helpers (src/auth.js) are copied alongside, and config.js carries the API URL
 // from LYRSOFT_API_BASE (set by scripts/deploy-lyrsoft.sh from the lyrsoft-work-api stack).
 import { createHash } from 'node:crypto';
-import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const OUT = 'dist-lyrsoft';
@@ -23,10 +23,15 @@ const assetBase = `/assets/${hash.digest('hex').slice(0, 12)}/`;
 await rm(OUT, { recursive: true, force: true });
 await mkdir(join(OUT, assetBase), { recursive: true });
 for (const [name, body] of files) await writeFile(join(OUT, assetBase, name), body);
-for (const page of ['index.html', 'callback.html']) {
-  const html = await readFile(join('lyrsoft', page), 'utf8');
-  await writeFile(join(OUT, page), html.replaceAll('"/app/', `"${assetBase}`));
+// The company website is the home page; the app lives at /app/. /callback.html stays at the root
+// because it is the redirect URL registered with Cognito.
+const pages = { 'home.html': 'index.html', 'index.html': 'app/index.html', 'callback.html': 'callback.html', '404.html': '404.html' };
+await mkdir(join(OUT, 'app'), { recursive: true });
+for (const [source, target] of Object.entries(pages)) {
+  let html = await readFile(join('lyrsoft', source), 'utf8');
+  // Pages reference assets as "/app/<file>"; links to the app itself ("/app/") are left alone.
+  for (const name of files.keys()) html = html.replaceAll(`"/app/${name}"`, `"${assetBase}${name}"`);
+  await writeFile(join(OUT, target), html);
 }
-await cp(join(OUT, 'index.html'), join(OUT, '404.html'));
 
 console.log(`Built Lyrsoft into ${OUT}/ (assets at ${assetBase}, API ${apiBase})`);

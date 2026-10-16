@@ -59,12 +59,16 @@ function update({ TableName, Key, UpdateExpression, ConditionExpression, Express
   }
   if (ConditionExpression && !existing) throw conditionalCheckFailed();
   const item = existing || { ...Key };
-  const [, action, clauses] = UpdateExpression.match(/^(SET|ADD) (.+)$/) || [];
-  if (!action) throw new Error(`fake-dynamodb: unsupported UpdateExpression ${UpdateExpression}`);
-  for (const clause of clauses.split(/,\s*/)) {
-    const [name, value] = action === 'SET' ? clause.split(/\s*=\s*/) : clause.split(/\s+/);
-    const attribute = n[name] || name;
-    item[attribute] = action === 'SET' ? clone(v[value]) : (item[attribute] || 0) + v[value];
+  const sections = [...UpdateExpression.matchAll(/(SET|ADD) (.+?)(?= (?:SET|ADD) |$)/g)];
+  if (!sections.length || sections.map((m) => m[0]).join(' ') !== UpdateExpression) {
+    throw new Error(`fake-dynamodb: unsupported UpdateExpression ${UpdateExpression}`);
+  }
+  for (const [, action, clauses] of sections) {
+    for (const clause of clauses.split(/,\s*/)) {
+      const [name, value] = action === 'SET' ? clause.split(/\s*=\s*/) : clause.split(/\s+/);
+      const attribute = n[name] || name;
+      item[attribute] = action === 'SET' ? clone(v[value]) : (item[attribute] || 0) + v[value];
+    }
   }
   store.set(keyOf(Key), item);
   return { Attributes: clone(item) };
