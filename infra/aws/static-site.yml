@@ -61,9 +61,10 @@ Resources:
               return request;
             }
 
+            // Clean URLs: /pricing -> /pricing/index.html
             const lastSegment = uri.substring(uri.lastIndexOf('/') + 1);
             if (!lastSegment.includes('.')) {
-              request.uri = '/index.html';
+              request.uri = `${uri}/index.html`;
             }
 
             return request;
@@ -73,6 +74,8 @@ Resources:
     Type: AWS::Lambda::Version
     Properties:
       FunctionName: !Ref ViewerRequestFunction
+      # Bump when the function code changes so CloudFront picks up a new version.
+      Description: clean-url-rewrite-v2
 
   OriginAccessControl:
     Type: AWS::CloudFront::OriginAccessControl
@@ -120,11 +123,11 @@ Resources:
               IncludeBody: false
         CustomErrorResponses:
           - ErrorCode: 403
-            ResponseCode: 200
-            ResponsePagePath: /index.html
+            ResponseCode: 404
+            ResponsePagePath: /404.html
           - ErrorCode: 404
-            ResponseCode: 200
-            ResponsePagePath: /index.html
+            ResponseCode: 404
+            ResponsePagePath: /404.html
         ViewerCertificate:
           AcmCertificateArn: !Ref Certificate
           SslSupportMethod: sni-only
