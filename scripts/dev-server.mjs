@@ -3,11 +3,9 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 
-// SITE=lyrsoft serves the Lyrsoft Work app (scripts/build-lyrsoft.mjs) instead of the Lyrcloud site.
-const lyrsoft = process.env.SITE === 'lyrsoft';
-const root = join(process.cwd(), lyrsoft ? 'dist-lyrsoft' : 'dist');
-const buildScript = lyrsoft ? 'scripts/build-lyrsoft.mjs' : 'scripts/build.mjs';
-const port = Number(process.env.PORT || (lyrsoft ? 5174 : 5173));
+const root = join(process.cwd(), 'dist');
+const buildScript = 'scripts/build.mjs';
+const port = Number(process.env.PORT || 5173);
 const types = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.css', 'text/css; charset=utf-8'],
@@ -45,5 +43,5 @@ createServer(async (request, response) => {
     response.end(await readFile(join(root, '404.html')).catch(() => 'Not found'));
   }
 }).listen(port, '0.0.0.0', () => {
-  console.log(`${lyrsoft ? 'Lyrsoft' : 'Lyrcloud'} dev server running at http://localhost:${port}`);
+  console.log(`Lyrcloud dev server running at http://localhost:${port}`);
 });
