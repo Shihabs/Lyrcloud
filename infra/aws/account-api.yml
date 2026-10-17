@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Lyrcloud account API (profile and admin user management) backed by DynamoDB, protected by a Cognito JWT authorizer.
+Description: Lyrcloud account API (profile and admin user management) backed by DynamoDB, protected by a Cognito JWT authorizer, plus the public Lyrbot help assistant.
 # Deploy with scripts/deploy-account-api.sh; Lambda source is in api/account/.
 
 Parameters:
@@ -17,6 +17,13 @@ Parameters:
   SuperAdminEmail:
     Type: String
     Default: lyrclouds@gmail.com
+  AnthropicSecretName:
+    Type: String
+    Default: lyrshop/anthropic
+    Description: Secrets Manager secret holding the Anthropic API key Lyrbot uses (shared with Lyrshop and Lyrsoft). Blank turns Lyrbot off.
+
+Conditions:
+  HasAnthropicSecret: !Not [!Equals [!Ref AnthropicSecretName, '']]
 
 Resources:
   UsersTable:
@@ -30,6 +37,26 @@ Resources:
       KeySchema:
         - AttributeName: userId
           KeyType: HASH
+
+  # Lyrbot use counters per visitor per hour and for the whole site per day.
+  RateLimitTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: lyrcloud-rate-limits
+      BillingMode: PAY_PER_REQUEST
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      AttributeDefinitions:
+        - AttributeName: key
+          AttributeType: S
+        - AttributeName: period
+          AttributeType: S
+      KeySchema:
+        - AttributeName: key
+          KeyType: HASH
+        - AttributeName: period
+          KeyType: RANGE
 
   AccountApiFunctionRole:
     Type: AWS::IAM::Role
@@ -55,6 +82,19 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:Scan
                 Resource: !GetAtt UsersTable.Arn
+              - Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !GetAtt RateLimitTable.Arn
+        - !If
+          - HasAnthropicSecret
+          - PolicyName: LyrbotSecret
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AnthropicSecretName}-*'
+          - !Ref AWS::NoValue
 
   AccountApiFunction:
     Type: AWS::Lambda::Function
@@ -63,11 +103,14 @@ Resources:
       Runtime: nodejs22.x
       Handler: index.handler
       Role: !GetAtt AccountApiFunctionRole.Arn
-      Timeout: 10
+      MemorySize: 512
+      Timeout: 29 # Lyrbot replies come from Claude; API Gateway waits at most 30 seconds
       Environment:
         Variables:
           TABLE_NAME: !Ref UsersTable
+          RATE_TABLE_NAME: !Ref RateLimitTable
           SUPER_ADMIN_EMAIL: !Ref SuperAdminEmail
+          ANTHROPIC_SECRET: !Ref AnthropicSecretName
       Code:
         S3Bucket: !Ref ArtifactsBucketName
         S3Key: !Ref LambdaCodeS3Key
@@ -82,6 +125,7 @@ Resources:
         AllowMethods:
           - GET
           - PUT
+          - POST
           - OPTIONS
         AllowHeaders:
           - Authorization
@@ -135,12 +179,29 @@ Resources:
       AuthorizationType: JWT
       AuthorizerId: !Ref JwtAuthorizer
 
+  # The one unauthenticated route. Throttled here, and per IP in the Lambda.
+  LyrbotRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'POST /public/lyrbot'
+      Target: !Sub 'integrations/${LambdaIntegration}'
+      AuthorizationType: NONE
+
   Stage:
     Type: AWS::ApiGatewayV2::Stage
+    DependsOn: [LyrbotRoute]
     Properties:
       ApiId: !Ref HttpApi
       StageName: '$default'
       AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+      RouteSettings:
+        'POST /public/lyrbot':
+          ThrottlingBurstLimit: 10
+          ThrottlingRateLimit: 2
 
   LambdaInvokePermission:
     Type: AWS::Lambda::Permission
