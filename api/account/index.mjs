@@ -5,9 +5,8 @@
 //
 // Protected by an API Gateway HTTP API JWT authorizer validating the Cognito
 // *access token*. Access tokens only carry `sub`/`username`, not profile
-// attributes, so each request calls Cognito's GetUser over plain HTTPS (no
-// AWS SDK or IAM permission needed: GetUser is authenticated by the bearer
-// token itself) for email/name/picture, then upserts the profile row in
+// attributes, so each request calls the Cognito Hosted UI userInfo endpoint
+// (authenticated by the bearer token itself) for email/name/picture, then upserts the profile row in
 // DynamoDB with the AWS SDK that ships with the Lambda Node.js runtime.
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
@@ -16,7 +15,8 @@ import { isStaff, publicProfile, roleChangeError, roleFor } from './roles.mjs';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE_NAME = process.env.TABLE_NAME;
 const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || 'lyrclouds@gmail.com';
-const REGION = process.env.AWS_REGION || 'us-east-1';
+// Cognito Hosted UI domain; its userInfo endpoint turns an access token into the caller's profile.
+const COGNITO_DOMAIN = process.env.COGNITO_DOMAIN || 'lyrcloud-auth.auth.us-east-1.amazoncognito.com';
 
 function jsonResponse(statusCode, body) {
   return {
@@ -28,20 +28,13 @@ function jsonResponse(statusCode, body) {
 
 const errorResponse = (statusCode, message) => jsonResponse(statusCode, { error: message });
 
-function attr(userAttributes, name) {
-  return userAttributes.find((a) => a.Name === name)?.Value ?? null;
-}
-
-async function cognitoGetUser(accessToken) {
-  const res = await fetch(`https://cognito-idp.${REGION}.amazonaws.com/`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/x-amz-json-1.1',
-      'x-amz-target': 'AWSCognitoIdentityProviderService.GetUser',
-    },
-    body: JSON.stringify({ AccessToken: accessToken }),
+// userInfo, not GetUser: GetUser needs the aws.cognito.signin.user.admin scope, which the app
+// client doesn't grant, so it failed on every call and the super admin was never recognised.
+async function cognitoUserInfo(accessToken) {
+  const res = await fetch(`https://${COGNITO_DOMAIN}/oauth2/userInfo`, {
+    headers: { authorization: `Bearer ${accessToken}` },
   });
-  if (!res.ok) throw new Error(`GetUser failed: ${res.status}`);
+  if (!res.ok) throw new Error(`userInfo failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
   return res.json();
 }
 
@@ -60,13 +53,13 @@ async function upsertCaller(event) {
   let provider = (claims.username || 'unknown').split('_')[0];
 
   try {
-    const userResult = await cognitoGetUser(accessToken);
-    email = attr(userResult.UserAttributes, 'email');
-    name = attr(userResult.UserAttributes, 'name');
-    picture = attr(userResult.UserAttributes, 'picture');
-    provider = (userResult.Username || provider).split('_')[0];
+    const user = await cognitoUserInfo(accessToken);
+    email = user.email ? String(user.email).toLowerCase() : null;
+    name = user.name ?? null;
+    picture = user.picture ?? null;
+    provider = (user.username || provider).split('_')[0];
   } catch (err) {
-    console.error('cognitoGetUser failed', err);
+    console.error('cognitoUserInfo failed', err);
   }
 
   const now = new Date().toISOString();
