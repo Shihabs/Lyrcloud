@@ -1,5 +1,6 @@
-// The lyrsoft.com company website: mobile menu and the contact form (POST /public/contact on the
-// work API, which files the enquiry on the Website leads board and in the hello@lyrsoft.com inbox).
+// The lyrsoft.com company website: mobile menu, Google sign-in and the contact form (POST /public/contact
+// on the work API, which files the enquiry on the Website leads board and in the hello@lyrsoft.com inbox).
+import { isLoggedIn, redirectToLogin } from './auth.js';
 import { WORK_API_BASE } from './config.js';
 
 // Lyrsoft Work used to live at the root; send old links like /#/w/... to the app.
@@ -16,6 +17,15 @@ toggle.addEventListener('click', () => {
 links.addEventListener('click', (event) => {
   if (event.target.tagName === 'A') links.classList.remove('open');
 });
+
+// "Sign in" goes straight to Google (the app's own welcome page is skipped); already signed in, it opens the app.
+document.querySelectorAll('[data-sign-in]').forEach((link) =>
+  link.addEventListener('click', (event) => {
+    if (isLoggedIn() || event.metaKey || event.ctrlKey || event.shiftKey) return;
+    event.preventDefault();
+    redirectToLogin('/app/', 'google');
+  }),
+);
 
 const form = document.getElementById('contact-form');
 const status = form.querySelector('.form-status');
