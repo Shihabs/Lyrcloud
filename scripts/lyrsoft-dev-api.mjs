@@ -29,17 +29,15 @@ process.env.MAIL_BUCKET = 'lyrsoft-mail-dev';
 process.env.MAIL_DOMAINS ??= 'lyrsoft.com,lyrcloud.com,lyrtrip.com,lyrshop.com,lyrpay.com,mrshihab.com';
 const port = Number(process.env.PORT || 8787);
 
-// Fake tokens look like "dev.<email>". Cognito's GetUser is answered locally.
+// Fake tokens look like "dev.<email>". Cognito's userInfo endpoint is answered locally.
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, options) => {
-  if (!String(url).includes('cognito-idp')) return realFetch(url, options);
-  const { AccessToken } = JSON.parse(options.body);
-  const email = AccessToken.replace(/^dev\./, '');
+  if (!String(url).includes('/oauth2/userInfo')) return realFetch(url, options);
+  const token = String(options?.headers?.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!token.startsWith('dev.')) return new Response('{"error":"invalid_token"}', { status: 401 });
+  const email = token.replace(/^dev\./, '');
   const name = email.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  return new Response(JSON.stringify({
-    Username: `GoogleOIDC_${email}`,
-    UserAttributes: [{ Name: 'email', Value: email }, { Name: 'name', Value: name }],
-  }));
+  return new Response(JSON.stringify({ sub: `sub-${email}`, username: `GoogleOIDC_${email}`, email, name }));
 };
 
 const { handler } = await import('../api/work/index.mjs');

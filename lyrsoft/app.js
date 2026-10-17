@@ -6,6 +6,7 @@ import { WORK_API_BASE } from './config.js';
 import { createMail } from './mail.js';
 
 const app = document.getElementById('app');
+const SIGN_IN_RETRY_KEY = 'lyrsoft.signin.retry_at';
 
 // ------------------------------------------------------------------ helpers
 
@@ -45,8 +46,15 @@ async function api(method, path, body) {
   }
   const data = await response.json().catch(() => ({}));
   if (response.status === 401) {
-    redirectToLogin(location.pathname + location.hash, 'google');
-    await new Promise(() => {});
+    // Send the visitor to sign in again, but only once a minute: if the API still refuses a fresh
+    // sign-in, show the error instead of bouncing between the app and Google forever.
+    const last = Number(sessionStorage.getItem(SIGN_IN_RETRY_KEY) || 0);
+    if (Date.now() - last > 60_000) {
+      sessionStorage.setItem(SIGN_IN_RETRY_KEY, String(Date.now()));
+      redirectToLogin(location.pathname + location.hash, 'google');
+      await new Promise(() => {});
+    }
+    throw new Error(`Couldn’t sign you in to Lyrsoft: ${data.error || data.message || 'unauthorized'}. Please try again in a minute.`);
   }
   if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
   return data;

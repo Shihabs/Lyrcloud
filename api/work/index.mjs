@@ -52,7 +52,8 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), { marshallOption
 const TABLE = process.env.TABLE_NAME;
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE_NAME;
 const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || 'lyrclouds@gmail.com';
-const REGION = process.env.AWS_REGION || 'us-east-1';
+// Cognito Hosted UI domain; its userInfo endpoint turns an access token into the caller's profile.
+const COGNITO_DOMAIN = process.env.COGNITO_DOMAIN || 'lyrcloud-auth.auth.us-east-1.amazoncognito.com';
 const MAIL_BUCKET = process.env.MAIL_BUCKET;
 const CONTACT_MAILBOX = (process.env.CONTACT_MAILBOX || 'hello@lyrsoft.com').toLowerCase();
 const SITE_URL = (process.env.SITE_URL || 'https://lyrsoft.com').replace(/\/$/, '');
@@ -121,15 +122,16 @@ async function identify(event) {
   const cached = identityCache.get(token);
   if (cached && cached.expires > Date.now()) return cached.identity;
 
-  const res = await fetch(`https://cognito-idp.${REGION}.amazonaws.com/`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-amz-json-1.1', 'x-amz-target': 'AWSCognitoIdentityProviderService.GetUser' },
-    body: JSON.stringify({ AccessToken: token }),
-  });
-  if (!res.ok) throw new HttpError(401, 'Your session has expired. Please sign in again.');
+  // userInfo, not GetUser: GetUser needs the aws.cognito.signin.user.admin scope, which the app
+  // client doesn't grant, so every call failed and signed-in users were sent back to sign in.
+  const res = await fetch(`https://${COGNITO_DOMAIN}/oauth2/userInfo`, { headers: { authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    console.warn('userInfo failed', res.status, (await res.text()).slice(0, 300));
+    throw new HttpError(401, 'Your session has expired. Please sign in again.');
+  }
   const user = await res.json();
-  const attr = (name) => user.UserAttributes.find((a) => a.Name === name)?.Value ?? null;
-  const provider = user.Username.split('_')[0];
+  const attr = (name) => user[name] ?? null;
+  const provider = String(user.username || '').split('_')[0];
   const email = String(attr('email') || '').toLowerCase();
   if (provider !== SUPER_ADMIN_PROVIDER || !email) throw new HttpError(403, 'Please sign in with Google to use Lyrsoft.');
 
