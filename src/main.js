@@ -1,5 +1,6 @@
 import { isLoggedIn, logout } from './auth.js';
 import { getSession } from './session.js';
+import './lyrbot.js';
 
 const menuButton = document.querySelector('.menu-button');
 const header = document.querySelector('.site-header');

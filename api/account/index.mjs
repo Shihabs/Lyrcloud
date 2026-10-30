@@ -2,14 +2,25 @@
 //   GET /me                    the signed-in profile, including its role
 //   GET /admin/users           every account (admins and the super admin)
 //   PUT /admin/users/{userId}  { role: "admin" | "user" } (super admin only)
+//   POST /public/lyrbot        the site's help assistant (lyrbot.mjs); the only public route
 //
-// Protected by an API Gateway HTTP API JWT authorizer validating the Cognito
+// The other routes are protected by an API Gateway HTTP API JWT authorizer validating the Cognito
 // *access token*. Access tokens only carry `sub`/`username`, not profile
 // attributes, so each request calls the Cognito Hosted UI userInfo endpoint
 // (authenticated by the bearer token itself) for email/name/picture, then upserts the profile row in
 // DynamoDB with the AWS SDK that ships with the Lambda Node.js runtime.
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import {
+  cleanLyrbotMessages,
+  LYRBOT_DAILY_LIMIT,
+  LYRBOT_DAILY_MESSAGE,
+  LYRBOT_FALLBACK_REPLY,
+  LYRBOT_HOURLY_LIMIT,
+  LYRBOT_HOURLY_MESSAGE,
+  lyrbotReply,
+} from './lyrbot.mjs';
 import { isStaff, publicProfile, roleChangeError, roleFor } from './roles.mjs';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -17,6 +28,10 @@ const TABLE_NAME = process.env.TABLE_NAME;
 const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || 'lyrclouds@gmail.com';
 // Cognito Hosted UI domain; its userInfo endpoint turns an access token into the caller's profile.
 const COGNITO_DOMAIN = process.env.COGNITO_DOMAIN || 'lyrcloud-auth.auth.us-east-1.amazoncognito.com';
+// Lyrbot use counters, keyed { key: "lyrbot#<ip>" | "lyrbot#all", period: <hour> | <day> }, expire via TTL.
+const RATE_TABLE_NAME = process.env.RATE_TABLE_NAME;
+// Secrets Manager secret holding the Anthropic API key for Lyrbot; ANTHROPIC_API_KEY wins (local dev).
+const ANTHROPIC_SECRET = process.env.ANTHROPIC_SECRET;
 
 function jsonResponse(statusCode, body) {
   return {
@@ -100,9 +115,55 @@ function parseBody(event) {
   }
 }
 
+// ------------------------------------------------------------------ Lyrbot
+
+// Counts one use of `key` in the current hour or day and returns the running total.
+async function countUse(key, period = 'hour') {
+  const { Attributes } = await ddb.send(new UpdateCommand({
+    TableName: RATE_TABLE_NAME,
+    Key: { key, period: new Date().toISOString().slice(0, period === 'day' ? 10 : 13) },
+    UpdateExpression: 'ADD hits :one SET expiresAt = :expires',
+    ExpressionAttributeValues: { ':one': 1, ':expires': Math.floor(Date.now() / 1000) + (period === 'day' ? 26 : 2) * 3600 },
+    ReturnValues: 'ALL_NEW',
+  }));
+  return Attributes.hits;
+}
+
+let anthropicKey;
+async function getAnthropicKey() {
+  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
+  if (!ANTHROPIC_SECRET) return null;
+  anthropicKey ??= (await new SecretsManagerClient({}).send(new GetSecretValueCommand({ SecretId: ANTHROPIC_SECRET }))).SecretString.trim();
+  return anthropicKey;
+}
+
+async function lyrbotChat(event) {
+  const apiKey = await getAnthropicKey();
+  if (!apiKey || !RATE_TABLE_NAME) return errorResponse(503, LYRBOT_FALLBACK_REPLY);
+  const body = parseBody(event);
+  if (!body) return errorResponse(400, 'Invalid JSON body.');
+  const conversation = cleanLyrbotMessages(body.messages);
+  if (!conversation) return errorResponse(422, 'Type a question for Lyrbot.');
+  if ((await countUse(`lyrbot#${event.requestContext?.http?.sourceIp || 'unknown'}`)) > LYRBOT_HOURLY_LIMIT) {
+    return errorResponse(429, LYRBOT_HOURLY_MESSAGE);
+  }
+  if ((await countUse('lyrbot#all', 'day')) > LYRBOT_DAILY_LIMIT) return errorResponse(429, LYRBOT_DAILY_MESSAGE);
+  const [status, reply] = await lyrbotReply(apiKey, conversation);
+  return jsonResponse(status, reply);
+}
+
 export const handler = async (event) => {
   const method = event.requestContext?.http?.method;
   const path = event.requestContext?.http?.path || '';
+
+  if (method === 'POST' && path === '/public/lyrbot') {
+    try {
+      return await lyrbotChat(event);
+    } catch (err) {
+      console.error('Lyrbot failed', err);
+      return errorResponse(500, LYRBOT_FALLBACK_REPLY);
+    }
+  }
 
   const caller = await upsertCaller(event);
   if (!caller) return errorResponse(401, 'unauthorized');
